@@ -110,19 +110,19 @@ def usage():
     Prints an example of the correct usage for this module and then exits,
     in the event of improper user input.
 
-    >>>Usage: hw1.py <file1>
+    >>>Usage: hw3.py <file1>.jpg
     """
-    print("Usage: "+sys.argv[0]+" <file1>")
+    print("Usage: "+sys.argv[0]+" <file1>.jpg")
     sys.exit(2)
 
 def getFile():
     """Creates a file descriptor for a user-specified file.
 
-    Retreives the filename from the second command line argument
+    Retrieves the filename of the jpg image from the second command line argument
     and then creates a file descriptor for it.
 
     Returns:
-        int: A file descriptor for the newly opened file specified
+        int: A file descriptor for the newly opened jpg specified
         by the user.
 
     Raises:
@@ -134,120 +134,162 @@ def getFile():
         usage()
     try:
         fd = open(filename, "rb")
-        if(fd.read(2) != b'\xff\xd8'):
-            print("Is not a JPG")
-            fd.close()
-        else:
-            print("Is a JPG")
-            return fd
     except:
         print("error opening program ")
         sys.exit()
+    if(fd.read(2) != b'\xff\xd8'): #checks if file passed in is a jpg
+        fd.close()
+        usage()
+    else:
+        return fd
+
 
 def get_markers():
-    offsets = []
-    markers = []
-    sizes = []
+    """Gets the markers in the jpg.
+
+    Uses the file descriptor to locate the markers of the jpg. Prints the markers' locations from
+    the start of the file, the names of the markers, and their sizes, all in hex format. Uses the sizes
+    of the markers to locate the other markers. Once a marker is found, it gets passed to check_exif.
+
+    >>[0x04F2] Marker 0xFFE1 size=0x0A0D
+
+    """
     fd = getFile()
-    offset = 2
+    offset = 2 #starting location of marker
     bytes = fd.read(2)
     while bytes:
-        """offsets.append(offset)"""
         marker = struct.unpack(">H", bytes)[0]
-        """markers.append(bytes)"""
         current_size = fd.read(2)
-        """sizes.append(current_size)"""
         print("[0x" + "%04X" % offset + "]" + " ", end = "")
-        current_size_int = struct.unpack(">h", current_size)[0]
+        current_size_int = struct.unpack(">h", current_size)[0] #size of marker
         exif = fd.read(6)
         indicator = offset + 10
-        offset = offset + 2 + current_size_int
+        offset = offset + 2 + current_size_int #Location of next marker
         print("Marker " + "0x" + "%X" % marker + " ", end = "")
         print("size=" + "0x" + "%04X" % current_size_int + " ")
         check_exif(exif, fd, indicator)
-        if(marker == 65498):
+        if(marker == 65498): #Once we reach 0xFFDA, we are at the end
             break
         fd.seek(offset)
         bytes = fd.read(2)
+    fd.close()
     
 def check_exif(exif, fd, indicator):
+    """Checks if a specific marker contains EXIF data and that it is Big Endian.
+    
+    Checks if a marker contains EXIF data by checking if it contains the EXIF bytes.
+    Next, the EXIF data is checked to ensure that it is Big Endian. If it is Little Endian, the 
+    file descriptor is closed and we exit. Endianness is checked by looking for specific bytes, in
+    this case, 'MM'. The location of the first M is also stored for later.
+    
+    Args:
+        exif: the bytes used to check if the marker contains EXIF data.
+        fd: The file descriptor for the jpg.
+        indicator: If this marker contains EXIF data, indicator points to the first 'M'
+
+    >>Number of IFD Entries: 9
+
+    """
     if(exif == b'Exif\x00\x00'):
-        '''print("match")'''
         exif = fd.read(2)
         if(exif == b'MM'):
-            '''print("Big Endian")'''
             exif = fd.read(2)
             exif = fd.read(4)
-            IFD_offset = struct.unpack(">L", exif[0:4])[0]
-            print(IFD_offset)
-            fd.seek(indicator)
+            IFD_offset = struct.unpack(">L", exif[0:4])[0] # Distance from first 'M' to IFD
+            fd.seek(indicator) #Return to first 'M'
             exif = fd.read(IFD_offset)
-            '''print(exif)'''
             exif = fd.read(2)
-            '''print(exif)'''
-            IFD_size = struct.unpack(">h", exif)[0]
+            IFD_size = struct.unpack(">h", exif)[0] # Number of IFD entries
             print("Number of IFD Entries: %d" % IFD_size)
             get_IFD(IFD_offset, IFD_size, fd, indicator)
         else:
-            print("Little Endian")
+            print("Does not work for Little Endian")
+            fd.close()
             sys.exit()
 
 def get_IFD(IFD_offset, IFD_size, fd, indicator):
-    entry_count = 0
+    """Gets and prints the IFD entries and their values.
+
+    Gets the IFD entries by using the formula indicator + IFD_offset + 
+    (entry_count * 12) + 2. Gets the entries' keys by reading in the bytes and looking
+    them up in the TAGS dictionary. The entries' names are printed in hex and then converted
+    into string format. The data of the entries' are converted into string format and printed
+    based upon their format type.
+
+    Args:
+        IFD_offset: The distance from the first 'M' to the IFD
+        IFD_size: The number of entries in the IFD
+        fd: The open file descriptor for the jpg
+        indicator: The location of the first 'M'
+
+    >>10f Make Apple
+    >>110 Model iPhone 5
+    >>11a XResolution ['72/1']
+    >>11b YResolution ['72/1']
+    >>128 ResolutionUnit 2
+    >>131 Software 8.1.2
+    >>132 DateTime 2015:01:10 16:18:44
+    >>8769 ExifIFDPointer [180]
+    >>8825 GPSInfoIFDPointer [978]
+
+    """
+    entry_count = 0 
     bytes_per_component = (0, 1, 1, 2, 4, 8, 1, 1, 2, 4, 8, 4, 8)
     while entry_count < IFD_size:
         fd.seek(indicator + IFD_offset + (entry_count * 12) + 2)
         tag = fd.read(2)
         tag_int = struct.unpack(">H", tag)[0]
-        tag_string = TAGS[tag_int]
+        try:
+            tag_string = TAGS[tag_int]
+        except KeyError: #Tag key is not in dictionary
+            print("Error retreiving value from dictionary; invalid key")
+            sys.exit()
         print("%x " % tag_int, end = "")
         print(tag_string + " ", end = "")
         format = fd.read(2)
         format_int = struct.unpack(">h", format)[0]
-        '''print("%d" % format_int + " ", end = "")'''
-        components = fd.read(4)
+        components = fd.read(4) #number of bytes for the data
         components_int = struct.unpack(">L", components)[0]
-        '''print("%d" % components_int + " ", end = "")'''
         entry_length = bytes_per_component[format_int] * components_int
-        '''print("%d" % entry_length + " ", end = "")'''
-        if(entry_length <= 4):
+        if(entry_length <= 4): #if length is less than or equal to for, need not search for data
             IFD_data = fd.read(4)
-            if(format_int == 1):
+            if(format_int == 1): #Unsigned byte
                 print(struct.unpack(">B", IFD_data[0:1])[0])
-            elif(format_int == 2):
+            elif(format_int == 2): #ASCII String
                 print(bytes.decode(IFD_data[0:entry_length]))
-            elif(format_int == 3):
+            elif(format_int == 3): #Unsigned Short
                 print(struct.unpack(">%dh" % components_int, IFD_data[0:entry_length])[0])
-            elif(format_int == 4):
+            elif(format_int == 4): #Unsigned Long
                 ulong = struct.unpack(">L", IFD_data[0:4])[0]
                 print("[%d]" % ulong)
-            elif(format_int == 7):
-                print(struct.unpack(">%dB" % entry_length, IFD_data[0:entry_length])[0])
-                print("".join("%c" % x for x in format_int))
-        else:
+            elif(format_int == 7): #Undefined (raw)
+                value = struct.unpack(">%dB" % entry_length, IFD_data[0:entry_length])
+                print("".join("%c" % x for x in value))
+        else: #Length is too long, so we use the offset to find the data
             IFD_data = fd.read(4)
             IFD_data_offset = struct.unpack(">L", IFD_data[0:4])[0]
             fd.seek(indicator + IFD_data_offset)
             IFD_data = fd.read(entry_length)
-            if(format_int == 1):
+            if(format_int == 1): #Unisgned byte
                 print(struct.unpack(">B", IFD_data[0:1])[0])
-            elif(format_int == 2):
+            elif(format_int == 2): #ASCII String
                 print(bytes.decode(IFD_data[0:entry_length]))
-            elif(format_int == 3):
+            elif(format_int == 3): #Unsigned Short
                 print(struct.unpack(">%dh" % components_int, IFD_data[0:entry_length])[0])
-            elif(format_int == 4):
+            elif(format_int == 4): #Unsigned Long
                 ulong = struct.unpack(">L", IFD_data[0:4])[0]
                 print("[%d]" % ulong)
-            elif(format_int == 5):
+            elif(format_int == 5): #Unsigned Rational
                 (numerator, denominator) = struct.unpack(">LL", IFD_data[0:8])
                 print("['" + "%s/%s" % (numerator, denominator) + "']")
-            elif(format_int == 7):
-                print(struct.unpack(">%dB" % entry_length, IFD_data[0:entry_length])[0])
-                print("".join("%c" % x for x in format_int))
+            elif(format_int == 7): #Undefined (raw)
+                value = struct.unpack(">%dB" % entry_length, IFD_data[0:entry_length])
+                print("".join("%c" % x for x in value))
 
         entry_count += 1
     
 def main():
+    """Simply runs with user-defined arguments"""
     get_markers()
 
 if __name__=="__main__":
